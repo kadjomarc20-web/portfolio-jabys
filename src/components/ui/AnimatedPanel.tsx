@@ -18,7 +18,8 @@ export function AnimatedPanel({
 }: AnimatedPanelProps) {
   const shouldReduceMotion = useReducedMotion() ?? false;
 
-  const ease: [number, number, number, number] = [1, 2, 1.5, 2];
+  // Courbe de Bézier : les valeurs x (1re et 3e) doivent rester entre 0 et 1
+  const ease: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
   return (
     <AnimatePresence initial={false}>
@@ -31,7 +32,7 @@ export function AnimatedPanel({
           animate={{ height: "auto", opacity: 1 }}
           exit={{ height: 0, opacity: 0 }}
           transition={{
-            duration: shouldReduceMotion ? 0 : 1,
+            duration: shouldReduceMotion ? 0 : 0.6,
             ease,
           }}
           className="overflow-hidden"

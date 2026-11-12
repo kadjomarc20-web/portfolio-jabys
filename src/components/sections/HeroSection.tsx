@@ -49,8 +49,8 @@ export function HeroSection() {
                   width={500}
                   height={500}
                   priority
-                  sizes="(max-width: 100px) 50vw, 40vw"
-                  className="object-cover dark:brightness-90"
+                  sizes="(min-width: 768px) 33vw, 100vw"
+                  className="h-full w-full object-cover dark:brightness-90"
                 />
               }
 

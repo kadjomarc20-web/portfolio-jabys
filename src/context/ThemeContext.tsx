@@ -3,8 +3,7 @@
 import {
   createContext,
   useContext,
-  useEffect,
-  useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 
@@ -17,19 +16,28 @@ interface ThemeContextValue {
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
-export default function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setTheme] = useState<Theme>("light");
+// Le thème est lu directement sur <html class="dark"> (posé par le script du
+// layout avant l'affichage). On s'abonne aux changements de cette classe.
+function subscribe(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["class"],
+  });
+  return () => observer.disconnect();
+}
 
-  // Au montage : on lit l'état déjà appliqué par le script du layout
-  useEffect(() => {
-    setTheme(
-      document.documentElement.classList.contains("dark") ? "dark" : "light"
-    );
-  }, []);
+const getTheme = (): Theme =>
+  document.documentElement.classList.contains("dark") ? "dark" : "light";
+
+// Côté serveur, on ne connaît pas le choix du visiteur : thème clair par défaut
+const getServerTheme = (): Theme => "light";
+
+export default function ThemeProvider({ children }: { children: ReactNode }) {
+  const theme = useSyncExternalStore(subscribe, getTheme, getServerTheme);
 
   const handleThemeSwitch = () => {
     const next: Theme = theme === "dark" ? "light" : "dark";
-    setTheme(next);
     document.documentElement.classList.toggle("dark", next === "dark");
     try {
       localStorage.setItem("theme", next);

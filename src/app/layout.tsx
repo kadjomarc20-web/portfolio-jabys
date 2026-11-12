@@ -35,6 +35,8 @@ export const viewport: Viewport = {
   colorScheme: "light",
   themeColor: "#F3F1EC",
 };
+// Exécuté dans <head>, avant le premier affichage : applique le thème
+// sombre mémorisé sans flash de la page en clair.
 const themeScript = `
   try {
     if (localStorage.getItem('theme') === 'dark') {
@@ -54,11 +56,13 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${displayFont.variable} ${bodyFont.variable} ${monoFont.variable}`}
     >
-      <body className="min-h-screen bg-[#F3F1EC] font-sans text-[#1F1D1A] antialiased">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
+      <body className="min-h-screen bg-[#F3F1EC] font-sans text-[#1F1D1A] antialiased dark:bg-[#221f1d] dark:text-[#F3F1EC]">
         <ThemeProvider>
           {children}
         </ThemeProvider>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </body>
     </html>
   );
