@@ -3,71 +3,36 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import * as THREE from "three";
-import {
-  WALL_HEIGHT,
-  WALL_THICKNESS,
-  furniture,
-  rooms,
-  segments,
-  type Room,
-  type Segment,
-} from "./housePlan";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
+import { FurnitureSet, Floors, Garden, Ground, Roof, Walls } from "./HouseModel";
+import { getMaterials } from "./houseMaterials";
+import { WALL_HEIGHT, rooms, type Room } from "./housePlan";
 
 /**
  * Maison pilotée par le scroll :
  *   1. vue de dessus = plan 2D sur fond bleu
  *   2. les murs montent, la caméra bascule en vue isométrique
- *   3. la maquette tourne et la fiche projet apparaît
+ *   3. meubles et jardin apparaissent, la caméra tourne autour
+ *   4. la toiture se pose : la maison est terminée, fiche projet
  */
 
 const BLUEPRINT = new THREE.Color("#0b3d91");
 const PAPER = new THREE.Color("#efeae0");
-const SLAB_PLAN = new THREE.Color("#0f4aa8");
-const SLAB_BUILT = new THREE.Color("#cfc8bb");
+const SLAB_PLAN = new THREE.Color("#0a3784");
+const SLAB_BUILT = new THREE.Color("#bdb6aa");
 
 const smoothstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
 
-const SILL = 0.9;
-const LINTEL = 2.1;
-
-function Wall({ s }: { s: Segment }) {
-  const length = s.to - s.from;
-  const mid = (s.from + s.to) / 2;
-  const position: [number, number] = s.axis === "x" ? [mid, s.at] : [s.at, mid];
-  const size: [number, number] =
-    s.axis === "x" ? [length, WALL_THICKNESS] : [WALL_THICKNESS, length];
-
-  if (s.kind === "wall") {
-    return (
-      <mesh position={[position[0], WALL_HEIGHT / 2, position[1]]} castShadow receiveShadow>
-        <boxGeometry args={[size[0], WALL_HEIGHT, size[1]]} />
-        <meshStandardMaterial color="#ffffff" roughness={0.9} />
-      </mesh>
-    );
-  }
-
-  const glass: [number, number] =
-    s.axis === "x" ? [length, 0.04] : [0.04, length];
-  return (
-    <group position={[position[0], 0, position[1]]}>
-      <mesh position={[0, SILL / 2, 0]} castShadow receiveShadow>
-        <boxGeometry args={[size[0], SILL, size[1]]} />
-        <meshStandardMaterial color="#ffffff" roughness={0.9} />
-      </mesh>
-      <mesh position={[0, (SILL + LINTEL) / 2, 0]}>
-        <boxGeometry args={[glass[0], LINTEL - SILL, glass[1]]} />
-        <meshStandardMaterial color="#8fd0ff" transparent opacity={0.45} roughness={0.1} />
-      </mesh>
-      <mesh position={[0, (LINTEL + WALL_HEIGHT) / 2, 0]} castShadow>
-        <boxGeometry args={[size[0], WALL_HEIGHT - LINTEL, size[1]]} />
-        <meshStandardMaterial color="#ffffff" roughness={0.9} />
-      </mesh>
-    </group>
-  );
-}
+/** Étapes du scroll (0 → 1) */
+const PHASE = {
+  build: [0.1, 0.38], // les murs montent, la caméra bascule
+  furnish: [0.34, 0.56], // meubles + jardin
+  orbit: [0.45, 0.95], // la caméra tourne autour de la maison
+  roof: [0.74, 0.9], // la toiture se pose
+} as const;
 
 function makeLabel(room: Room) {
   const canvas = document.createElement("canvas");
@@ -97,6 +62,21 @@ function RoomLabel({ room }: { room: Room }) {
   );
 }
 
+/** Éclairage d'ambiance réaliste (reflets doux sur le verre, le métal…) */
+function useEnvironment() {
+  const gl = useThree((state) => state.gl);
+  const texture = useMemo(() => {
+    const pmrem = new THREE.PMREMGenerator(gl);
+    const room = new RoomEnvironment();
+    const env = pmrem.fromScene(room, 0.04).texture;
+    room.dispose();
+    pmrem.dispose();
+    return env;
+  }, [gl]);
+  useEffect(() => () => texture.dispose(), [texture]);
+  return texture;
+}
+
 function Scene({
   progress,
   onBackground,
@@ -105,50 +85,59 @@ function Scene({
   onBackground: (color: string) => void;
 }) {
   const { camera, size } = useThree();
+  const environment = useEnvironment();
   const smooth = useRef(0);
   const walls = useRef<THREE.Group>(null);
   const furnitureGroup = useRef<THREE.Group>(null);
-  const roomFloors = useRef<THREE.Group>(null);
+  const garden = useRef<THREE.Group>(null);
+  const roof = useRef<THREE.Group>(null);
   const labels = useRef<THREE.Group>(null);
-
-  const slabMaterial = useMemo(
-    () => new THREE.MeshStandardMaterial({ color: SLAB_PLAN, roughness: 1 }),
-    [],
-  );
   const bg = useMemo(() => new THREE.Color(), []);
 
   useFrame((_, delta) => {
+    const M = getMaterials();
     // Lissage du scroll pour un mouvement fluide
     smooth.current += (progress.current - smooth.current) * Math.min(1, delta * 6);
     const p = smooth.current;
 
-    const build = smoothstep(0.12, 0.55, p); // plan -> volume
-    const orbit = smoothstep(0.5, 1, p); // rotation finale
-    const furnish = smoothstep(0.45, 0.7, p);
+    const build = smoothstep(...PHASE.build, p);
+    const furnish = smoothstep(...PHASE.furnish, p);
+    const orbit = smoothstep(...PHASE.orbit, p);
+    const roofDrop = smoothstep(...PHASE.roof, p);
 
     if (walls.current) walls.current.scale.y = Math.max(0.004, build);
     if (furnitureGroup.current) {
       furnitureGroup.current.scale.y = Math.max(0.001, furnish);
       furnitureGroup.current.visible = furnish > 0.001;
     }
-    if (roomFloors.current) {
-      roomFloors.current.children.forEach((child) => {
-        const material = (child as THREE.Mesh).material as THREE.MeshStandardMaterial;
-        material.opacity = build;
-      });
+    if (garden.current) {
+      garden.current.scale.setScalar(Math.max(0.001, furnish));
+      garden.current.visible = furnish > 0.001;
+    }
+    if (roof.current) {
+      roof.current.visible = roofDrop > 0.001;
+      roof.current.position.y = WALL_HEIGHT + (1 - roofDrop) * 9;
     }
 
-    slabMaterial.color.lerpColors(SLAB_PLAN, SLAB_BUILT, build);
-    // Étiquettes : blanches sur le plan bleu, sombres sur la maquette
+    // Sols et terrain apparaissent en fondu
+    M.floorWood.opacity = build;
+    M.floorTile.opacity = build;
+    M.lawn.opacity = build;
+    M.soil.opacity = build;
+    M.slab.color.lerpColors(SLAB_PLAN, SLAB_BUILT, build);
+    const labelOpacity = 1 - smoothstep(0.25, 0.4, p);
     labels.current?.children.forEach((child) => {
-      ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).color.setScalar(1 - 0.8 * build);
+      ((child as THREE.Mesh).material as THREE.MeshBasicMaterial).opacity = labelOpacity;
     });
+
     bg.lerpColors(BLUEPRINT, PAPER, build);
     onBackground(`#${bg.getHexString()}`);
 
-    // Caméra : de la vue de dessus à la vue isométrique, puis orbite
-    const polar = THREE.MathUtils.lerp(0.02, 0.72, build);
-    const azimuth = THREE.MathUtils.lerp(0, Math.PI / 4, build) + orbit * (Math.PI / 2.5);
+    // Caméra : vue de dessus → vue isométrique → tour de la maison
+    // jusqu'à la façade sud (entrée, terrasse), un peu plus basse et plus proche
+    const polar = THREE.MathUtils.lerp(0.02, 0.8, build) + roofDrop * 0.3;
+    const azimuth =
+      THREE.MathUtils.lerp(0, Math.PI / 4, build) - orbit * (Math.PI / 4 + Math.PI / 5);
     const cam = camera as THREE.PerspectiveCamera;
     const halfFov = THREE.MathUtils.degToRad(cam.fov / 2);
     const aspect = size.width / size.height;
@@ -157,81 +146,43 @@ function Scene({
     const wide = size.width >= 640;
     if (wide) cam.setViewOffset(size.width, size.height, -size.width * 0.13, 0, size.width, size.height);
     else cam.clearViewOffset();
-    const distance = Math.max(17 / (2 * Math.tan(halfFov)), (wide ? 24 : 15) / (2 * Math.tan(halfFov) * aspect));
+    const framing = THREE.MathUtils.lerp(1, 1.3, build);
+    const distance =
+      framing *
+      Math.max(17 / (2 * Math.tan(halfFov)), (wide ? 24 : 15) / (2 * Math.tan(halfFov) * aspect));
     cam.position.setFromSphericalCoords(distance, polar, azimuth);
-    cam.lookAt(0, 0.6 * build, 0);
+    cam.lookAt(0, 0.8 * build, 0.5 * build);
   });
-
-  const corners: [number, number][] = [
-    [-6, -4],
-    [6, -4],
-    [-6, 4],
-    [6, 4],
-  ];
 
   return (
     <>
-      <ambientLight intensity={1.3} />
+      <primitive attach="environment" object={environment} />
+      <hemisphereLight args={["#fff6e8", "#7c8a6a", 0.9]} />
       <directionalLight
-        position={[8, 14, 6]}
-        intensity={2.2}
+        position={[9, 14, 10]}
+        intensity={2.6}
+        color="#fff1dc"
         castShadow
         shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-10}
-        shadow-camera-right={10}
-        shadow-camera-top={10}
-        shadow-camera-bottom={-10}
-        shadow-bias={-0.0005}
+        shadow-camera-left={-14}
+        shadow-camera-right={14}
+        shadow-camera-top={14}
+        shadow-camera-bottom={-14}
+        shadow-bias={-0.0004}
+        shadow-normalBias={0.02}
       />
 
-      {/* Dalle */}
-      <mesh position={[0, -0.1, 0]} receiveShadow material={slabMaterial}>
-        <boxGeometry args={[12.6, 0.2, 8.6]} />
-      </mesh>
-
-      {/* Sols des pièces */}
-      <group ref={roomFloors}>
-        {rooms.map((room) => (
-          <mesh
-            key={room.name}
-            position={[room.x, 0.01, room.z]}
-            rotation={[-Math.PI / 2, 0, 0]}
-            receiveShadow
-          >
-            <planeGeometry args={[room.w, room.d]} />
-            <meshStandardMaterial color={room.color} transparent opacity={0} roughness={1} />
-          </mesh>
-        ))}
-      </group>
-
+      <Ground />
+      <Floors />
       <group ref={labels}>
         {rooms.map((room) => (
           <RoomLabel key={room.name} room={room} />
         ))}
       </group>
-
-      {/* Murs */}
-      <group ref={walls}>
-        {segments.map((s, k) => (
-          <Wall key={k} s={s} />
-        ))}
-        {corners.map(([x, z]) => (
-          <mesh key={`${x}${z}`} position={[x, WALL_HEIGHT / 2, z]} castShadow>
-            <boxGeometry args={[WALL_THICKNESS, WALL_HEIGHT, WALL_THICKNESS]} />
-            <meshStandardMaterial color="#ffffff" roughness={0.9} />
-          </mesh>
-        ))}
-      </group>
-
-      {/* Mobilier */}
-      <group ref={furnitureGroup}>
-        {furniture.map((f, k) => (
-          <mesh key={k} position={[f.x, f.h / 2, f.z]} castShadow receiveShadow>
-            <boxGeometry args={[f.w, f.h, f.d]} />
-            <meshStandardMaterial color={f.color} roughness={0.8} />
-          </mesh>
-        ))}
-      </group>
+      <Walls ref={walls} />
+      <FurnitureSet ref={furnitureGroup} />
+      <Garden ref={garden} />
+      <Roof ref={roof} />
     </>
   );
 }
@@ -248,7 +199,12 @@ const steps = [
     text: "2,60 m sous plafond, refend central porteur, baies vitrées au sud pour la lumière.",
   },
   {
-    tag: "03 — La fiche projet",
+    tag: "03 — L'aménagement",
+    title: "Des pièces à vivre",
+    text: "Séjour traversant ouvert sur la terrasse, cuisine en L, deux chambres de 22 m² au calme.",
+  },
+  {
+    tag: "04 — L'ouvrage fini",
     title: "Villa de plain-pied",
     text: "",
   },
@@ -277,7 +233,7 @@ export default function HouseScroll() {
       const total = rect.height - window.innerHeight;
       const p = total > 0 ? Math.min(1, Math.max(0, -rect.top / total)) : 0;
       progress.current = p;
-      setStep(p < 0.3 ? 0 : p < 0.62 ? 1 : 2);
+      setStep(p < 0.2 ? 0 : p < 0.42 ? 1 : p < 0.74 ? 2 : 3);
     };
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
@@ -295,14 +251,14 @@ export default function HouseScroll() {
   }, []);
 
   return (
-    <section ref={section} className="relative h-[400vh]">
+    <section ref={section} className="relative h-[500vh]">
       <div
         ref={background}
         className="sticky top-0 h-screen overflow-hidden"
         style={{ backgroundColor: "#0b3d91" }}
       >
         <Canvas
-          shadows
+          shadows="percentage"
           dpr={[1, 2]}
           frameloop={inView ? "always" : "never"}
           camera={{ fov: 30, near: 0.1, far: 200, position: [0, 30, 0.5] }}
